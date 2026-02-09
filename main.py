@@ -2,25 +2,51 @@
 """
 CLI entry point for the audit‑trail pipeline.
 
-Running this module from the command line triggers individual chunks of the
-pipeline in sequence. It now supports:
+This script drives the various stages ("chunks") of the audit‑trail
+pipeline and the strategic matrix workflow. Each stage can be invoked
+independently from the command line by specifying a task and chunk
+number.  The pipeline supports two high‑level tasks:
 
-  • Chunk 1: Repository scaffold.
-  • Chunk 3: Processing + indexing (building the vector index).
-  • Chunk 5: Final outputs and QA report generation.
+* **Task 1 – Audit‑trail pipeline:** Build the repository scaffold,
+  index ingested documents for retrieval, and produce final outputs
+  including CSV tables and a data quality report.
+* **Task 2 – Strategic fit matrix:** Generate a strategic fit matrix
+  visualisation along with a narrative summary and audit log based on
+  previously computed placements.
+
+Within each task there are numbered chunks.  For Task 1 the supported
+chunks are:
+
+  * **Chunk 1:** Scaffold (create the expected directory structure and
+    initialise a run context).
+  * **Chunk 3:** Processing and indexing (chunk documents, build a
+    retrieval index, and optionally perform a search query).
+  * **Chunk 5:** Final outputs (compute financial multiples, determine
+    slide readiness, generate CSV tables and a data quality report).
+
+For Task 2 the only defined chunk at present is:
+
+  * **Chunk 3:** Generate the strategic fit matrix visual, narrative
+    bullets for slides, and an audit log.  This chunk expects that
+    strategic matrix placements have already been produced by a prior
+    step (Task 2, Chunk 2) and written to
+    ``data/output/strategic_matrix_placements.jsonl``.
 
 Usage examples:
 
 ```bash
-# Create scaffold
-python main.py --chunk 1
+# Task 1: create scaffold
+python main.py --task 1 --chunk 1
 
-# Build index (Chunk 3) and optionally query it
-python main.py --chunk 3 --force
-python main.py --chunk 3 --query "last‑mile delivery valuations" --top_k 5
+# Task 1: build index (Chunk 3) and optionally query it
+python main.py --task 1 --chunk 3 --force
+python main.py --task 1 --chunk 3 --query "last‑mile delivery valuations" --top_k 5
 
-# Generate final CSVs and QA report (Chunk 5)
-python main.py --chunk 5
+# Task 1: generate final CSVs and QA report (Chunk 5)
+python main.py --task 1 --chunk 5
+
+# Task 2: strategic fit matrix visual and narrative (Chunk 3)
+python main.py --task 2 --chunk 3
 ```
 """
 
@@ -305,70 +331,245 @@ def run_chunk5(base_dir: Path) -> int:
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
+def run_task2_chunk3(base_dir: Path) -> int:
     """
-    Main entry point invoked by the command line.
+    Execute Task 2 Chunk 3: generate the strategic fit matrix visual,
+    narrative bullets and audit log.
 
-    This function parses command line arguments to select which pipeline
-    chunk to execute. Supported chunks are:
-
-    * 1: Scaffold (create directory structure and initialise run context).
-    * 3: Processing + indexing (chunk documents and build a retrieval index).
-      Optionally performs a query if the `--query` flag is provided.
-    * 5: Final outputs (generate CSVs and QA report).
+    This function reads strategic matrix placements (JSONL records) from
+    ``data/output/strategic_matrix_placements.jsonl``, validates the matrix
+    configuration, generates a high‑resolution scatter plot, a narrative
+    description and an audit report.  Outputs are written under
+    ``data/output/``.  It also logs the run context and summarises
+    outcomes to the console.
 
     Parameters
     ----------
-    argv : list of str, optional
-        Command‑line arguments; defaults to sys.argv[1:].
+    base_dir : Path
+        Root directory of the repository.
 
     Returns
     -------
     int
-        Exit status code.
+        Exit status code (0 for success).
+    """
+    from src.pipeline import strategic_framework, matrix_visual, matrix_narrative, matrix_audit
+    from src.pipeline.strategic_models import CompanyPlacement  # type: ignore
+    import json
+
+    # Ensure directories exist
+    ensure_directories(base_dir)
+
+    # Load base settings
+    config_dir = base_dir / "config"
+    try:
+        settings = load_settings(config_dir)
+    except (ConfigError, FileNotFoundError) as exc:
+        print(f"Error loading base configuration: {exc}", file=sys.stderr)
+        return 1
+
+    # Load matrix configuration
+    try:
+        matrix_config = strategic_framework.load_matrix_config(config_dir / "strategic_matrix.yaml")
+        strategic_framework.validate_config(matrix_config)
+    except Exception as exc:
+        print(f"Error loading matrix configuration: {exc}", file=sys.stderr)
+        return 1
+
+    # Initialise run context
+    logs_root = base_dir / "logs"
+    run_id, run_dir, manifest = init_run(settings.as_of_date, logs_root)
+    logger = get_logger(run_id, run_dir, log_level=settings.log_level)
+    logger.info("Initialising Task 2 Chunk 3: matrix visual and narrative generation")
+
+    # Append entry to notes log
+    append_notes_log(
+        logs_root=logs_root,
+        run_id=run_id,
+        started_at=manifest["started_at"],
+        as_of_date=settings.as_of_date,
+        chunk_desc="Task 2 Chunk 3: matrix visual and narrative",
+    )
+
+    # Load placements
+    placements_path = base_dir / "data" / "output" / "strategic_matrix_placements.jsonl"
+    if not placements_path.exists():
+        logger.error("Placements file not found: %s", placements_path)
+        print("Error: strategic_matrix_placements.jsonl not found. Run Task 2 Chunk 2 first.", file=sys.stderr)
+        return 1
+
+    placements: list[CompanyPlacement] = []
+    with placements_path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+                try:
+                    # Try Pydantic v2 API
+                    placement = CompanyPlacement.model_validate(data)  # type: ignore[attr-defined]
+                except Exception:
+                    placement = CompanyPlacement.parse_obj(data)  # type: ignore[attr-defined]
+                placements.append(placement)
+            except Exception as exc:
+                logger.warning("Skipping malformed placement line: %s", exc)
+                continue
+
+    if not placements:
+        logger.error("No placements loaded from %s", placements_path)
+        print("Error: no placements to visualise.", file=sys.stderr)
+        return 1
+
+    # Generate matrix plot
+    output_dir = base_dir / "data" / "output"
+    numbered_mode, legend_path = matrix_visual.generate_matrix_plot(
+        matrix_config=matrix_config,
+        placements=placements,
+        output_dir=output_dir,
+        numbered_mode_threshold=15,
+    )
+
+    # Generate narrative
+    narrative_path = output_dir / "strategic_matrix_slide_bullets.md"
+    matrix_narrative.generate_narrative(
+        matrix_config=matrix_config,
+        placements=placements,
+        output_path=narrative_path,
+        as_of_date=settings.as_of_date,
+    )
+
+    # Generate audit log
+    audit_path = output_dir / "strategic_matrix_audit.md"
+    matrix_audit.generate_audit(
+        placements=placements,
+        output_path=audit_path,
+    )
+
+    # Summarise counts
+    total_placements = len(placements)
+    plotted_count = len([p for p in placements if p.axis_x_score is not None and p.axis_y_score is not None])
+    unplotted = total_placements - plotted_count
+    quadrant_counts: dict[str, int] = {}
+    for p in placements:
+        quad = p.quadrant or "Unplaced"
+        quadrant_counts[quad] = quadrant_counts.get(quad, 0) + 1
+
+    # Console output
+    print("Task 2 Chunk 3 completed.")
+    print(f"Run ID: {run_id}")
+    print(f"Matrix image saved to {output_dir / 'strategic_fit_matrix.png'}")
+    if numbered_mode and legend_path:
+        print(f"Legend file saved to {legend_path}")
+    print(f"Narrative markdown saved to {narrative_path}")
+    print(f"Audit log saved to {audit_path}")
+    print(f"Total placements: {total_placements}")
+    print(f"Plotted points: {plotted_count}, Unplotted (missing scores): {unplotted}")
+    print("Quadrant counts:")
+    for quad, count in quadrant_counts.items():
+        print(f"  {quad}: {count}")
+
+    # Log summary
+    logger.info(
+        "Task 2 Chunk 3 summary: total=%d, plotted=%d, unplotted=%d, numbered_mode=%s",
+        total_placements,
+        plotted_count,
+        unplotted,
+        numbered_mode,
+    )
+
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    """
+    Main entry point invoked by the command line.
+
+    This function parses command‑line arguments to determine which task
+    and chunk to run.  Two tasks are supported:
+
+    * **Task 1:** Audit‑trail pipeline (scaffold, indexing, final outputs).
+    * **Task 2:** Strategic fit matrix (visual + narrative + audit).
+
+    For Task 1 the valid chunks are 1, 3 and 5.  For Task 2 the only
+    valid chunk is 3.  Additional arguments apply to certain chunks
+    (e.g., ``--query`` and ``--force`` for Task 1, Chunk 3).
+
+    Parameters
+    ----------
+    argv : list of str, optional
+        Command‑line arguments; defaults to ``sys.argv[1:]``.
+
+    Returns
+    -------
+    int
+        Exit status code (0 for success, non‑zero for errors).
     """
     parser = argparse.ArgumentParser(
-        description="Audit‑trail pipeline CLI.",
+        description="Audit‑trail and strategic matrix CLI.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "--task",
+        type=int,
+        default=1,
+        help="Task to execute (1=audit‑trail pipeline, 2=strategic matrix).",
     )
     parser.add_argument(
         "--chunk",
         type=int,
         required=True,
-        help="Pipeline chunk to execute (1=scaffold, 3=indexing, 5=final outputs).",
+        help=(
+            "Chunk number to execute. For task 1 use 1, 3 or 5. "
+            "For task 2 use 3."
+        ),
     )
     parser.add_argument(
         "--query",
         type=str,
         default=None,
-        help="If provided with chunk 3, perform a query against the built index.",
+        help="If provided with task 1, chunk 3, perform a query against the built index.",
     )
     parser.add_argument(
         "--top_k",
         type=int,
         default=10,
-        help="Number of top results to return for a query (chunk 3).",
+        help="Number of top results to return for a query (task 1, chunk 3).",
     )
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Force rebuild of embeddings and index (chunk 3).",
+        help="Force rebuild of embeddings and index (task 1, chunk 3).",
     )
     args = parser.parse_args(argv)
+
     base_dir = Path(__file__).resolve().parent
-    if args.chunk == 1:
-        return run_chunk1(base_dir)
-    elif args.chunk == 3:
-        return run_chunk3(
-            base_dir=base_dir,
-            query=args.query,
-            top_k=args.top_k,
-            force_rebuild=args.force,
-        )
-    elif args.chunk == 5:
-        return run_chunk5(base_dir)
+
+    if args.task == 1:
+        # Audit‑trail pipeline tasks
+        if args.chunk == 1:
+            return run_chunk1(base_dir)
+        elif args.chunk == 3:
+            return run_chunk3(
+                base_dir=base_dir,
+                query=args.query,
+                top_k=args.top_k,
+                force_rebuild=args.force,
+            )
+        elif args.chunk == 5:
+            return run_chunk5(base_dir)
+        else:
+            print(f"Unsupported chunk {args.chunk} for task 1", file=sys.stderr)
+            return 1
+    elif args.task == 2:
+        # Strategic matrix tasks
+        if args.chunk == 3:
+            return run_task2_chunk3(base_dir)
+        else:
+            print(f"Unsupported chunk {args.chunk} for task 2", file=sys.stderr)
+            return 1
     else:
-        print(f"Unsupported chunk: {args.chunk}", file=sys.stderr)
+        print(f"Unsupported task: {args.task}", file=sys.stderr)
         return 1
 
 
