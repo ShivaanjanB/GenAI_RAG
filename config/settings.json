@@ -1,5 +1,36 @@
 {
-  "as_of_date": "2025-01-01",
+  "as_of_date": "2025-04-30",
   "log_level": "INFO",
-  "sources": []
+  "sources": [
+    {
+      "name": "pitchbook",
+      "reliability": 1.5,
+      "tags": ["private", "financial", "valuation"]
+    },
+    {
+      "name": "gartner",
+      "reliability": 1.3,
+      "tags": ["research", "industry"]
+    },
+    {
+      "name": "pwc",
+      "reliability": 1.2,
+      "tags": ["consulting", "report"]
+    },
+    {
+      "name": "techcrunch",
+      "reliability": 0.8,
+      "tags": ["news", "tech"]
+    },
+    {
+      "name": "press_release",
+      "reliability": 0.7,
+      "tags": ["news", "official"]
+    },
+    {
+      "name": "blog",
+      "reliability": 0.5,
+      "tags": ["opinion", "blog"]
+    }
+  ]
 }
