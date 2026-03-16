@@ -1,0 +1,11 @@
+listing_id,address,city,state,zip_code,price,bedrooms,bathrooms,sqft,lot_size_sqft,year_built,property_type,status,days_on_market,source
+L001,123 Maple St,Austin,TX,78701,450000,3,2,1850,6200,2005,Single Family,Active,12,zillow
+L002,456 Oak Ave,Austin,TX,78702,375000,2,2,1400,4500,1998,Condo,Active,5,redfin
+L003,789 Pine Rd,Austin,TX,78703,620000,4,3,2600,8100,2012,Single Family,Active,30,realtor
+L004,321 Elm Blvd,Austin,TX,78704,290000,2,1,1100,3800,1985,Townhouse,Active,18,zillow
+L005,654 Cedar Ln,Austin,TX,78705,815000,5,4,3400,10200,2019,Single Family,Active,7,redfin
+L006,987 Birch Ct,Austin,TX,78706,530000,3,2,2100,7000,2008,Single Family,Pending,22,realtor
+L007,147 Walnut Dr,Austin,TX,78707,410000,3,2,1750,5600,2001,Single Family,Active,14,zillow
+L008,258 Spruce Way,Austin,TX,78708,340000,2,2,1300,4200,1995,Condo,Active,9,redfin
+L009,369 Ash St,Austin,TX,78709,700000,4,3,2900,9500,2016,Single Family,Active,3,realtor
+L010,741 Poplar Ave,Austin,TX,78710,255000,1,1,850,2800,1979,Condo,Active,25,zillow

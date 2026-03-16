@@ -43,6 +43,7 @@ from pydantic import BaseModel, Field
 
 from src.utils.config import load_settings, Settings
 from src.pipeline.index import query_index
+from src.data_providers.real_estate_csv import load_listings, SUPPORTED_SOURCES
 
 
 
@@ -106,6 +107,33 @@ class QueryResponse(BaseModel):
 app = FastAPI(title="Audit‑Trail RAG API")
 
 
+# ---------------------------------------------------------------------------
+# Real-estate listings endpoint
+# ---------------------------------------------------------------------------
+
+class ListingsRequest(BaseModel):
+    """Schema for the /listings request payload."""
+
+    source: str = Field(
+        ...,
+        description=(
+            "Platform originating the request: 'zillow', 'redfin', or 'realtor' / 'realtor.com'"
+        ),
+    )
+    filters: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Optional column→value filters applied after source filtering (e.g. {\"status\": \"Active\"})",
+    )
+
+
+class ListingsResponse(BaseModel):
+    """Schema for the /listings response payload."""
+
+    source: str
+    count: int
+    listings: List[Dict[str, Any]]
+
+
 @app.post("/query", response_model=QueryResponse)
 def query_endpoint(req: QueryRequest) -> QueryResponse:
     """Handle search queries against the built index.
@@ -157,3 +185,43 @@ def query_endpoint(req: QueryRequest) -> QueryResponse:
     # Truncate to requested top_k
     final = ranked[: req.top_k]
     return QueryResponse(results=final)
+
+
+@app.post("/listings", response_model=ListingsResponse)
+def listings_endpoint(req: ListingsRequest) -> ListingsResponse:
+    """Return property listings for a given real-estate platform.
+
+    The CSV is read fresh on **every** request — there is no in-process
+    cache — so feed-sync jobs updating the file are reflected immediately
+    without any server restart.
+
+    Supported sources: ``zillow``, ``redfin``, ``realtor`` / ``realtor.com``.
+
+    Parameters
+    ----------
+    req : ListingsRequest
+        Request body with the ``source`` field and optional ``filters``.
+
+    Returns
+    -------
+    ListingsResponse
+        Canonical source name, total count, and the matching listing rows.
+
+    Raises
+    ------
+    422
+        If ``source`` is not one of the supported platform identifiers.
+    404
+        If the listings CSV file does not exist.
+    """
+    from fastapi import HTTPException
+
+    try:
+        rows = load_listings(source=req.source, filters=req.filters)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    canonical = req.source.strip().lower().replace(".com", "")
+    return ListingsResponse(source=canonical, count=len(rows), listings=rows)
